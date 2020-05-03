@@ -172,7 +172,6 @@ model %>% fit(
 result1 <- model %>%  evaluate(data,y_data)
 result1 # Test Accuracy of the model is 51%
 
-#Model quickly starts overfitting with less collection of training samples. Model accuracy using both pre-trained embedding layer and embedding layer is the same when we take fewer training samples. Model efficiency depends on the number of samples we take and depends on which 100 samples we choose when we take a few samples.
 
 ```
 
