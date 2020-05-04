@@ -1,0 +1,218 @@
+---
+title: "RNN on Weather Forecasting"
+author: "Rajendra"
+output: html_document
+---
+
+
+Libraries
+```{r,message=FALSE}
+library(tibble)
+library(readr)
+library(keras)
+```
+
+Importing Dataset
+```{r,message=FALSE}
+dataset <- read_csv("jena_climate_2009_2016.csv")
+```
+
+Data Preperation
+Dimensions of the data
+```{r}
+dim(dataset)
+```
+
+sampling the dataset to fewer samples (20000 samples) and excluding 1st coloumn which have data and time for further analysis.
+
+```{r,message=FALSE}
+data <- dataset[1:20000,]
+data <- data.matrix(data[,-1])
+```
+
+
+Data Preprocessing
+Partitioning the data into **train,test & validation splits**
+```{r}
+train_data <- data[1:15000,]
+mean <- apply(train_data, 2, mean)
+std <- apply(train_data, 2, sd)
+
+# Scaling Data
+data <- scale(data, center = mean, scale = std)
+```
+
+
+**Generator**
+
+```{r}
+generator <- function(data, lookback, delay, min_index, max_index,
+                      shuffle = FALSE, batch_size = 128, step = 6) {
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <- sample(c((min_index+lookback):max_index), size = batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i+batch_size, max_index))
+      i <<- i + length(rows)
+    }
+    samples <- array(0, dim = c(length(rows),
+                                lookback / step,
+                                dim(data)[[-1]]))
+    targets <- array(0, dim = c(length(rows)))
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]],
+                     length.out = dim(samples)[[2]])
+      samples[j,,] <- data[indices,]
+      targets[[j]] <- data[rows[[j]] + delay,2]
+    }
+    list(samples, targets)
+  }
+}
+```
+
+
+
+```{r}
+lookback <- 1440
+step <- 6
+delay <- 144
+batch_size <- 128
+```
+
+
+```{r}
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 15000,
+  shuffle = TRUE,
+  step = step,
+  batch_size = batch_size
+)
+val_gen = generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 15001,
+  max_index = 17000,
+  step = step,
+  batch_size = batch_size
+)
+test_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 17001,
+  max_index = 19000,
+  step = step,
+  batch_size = batch_size
+)
+
+# Caluclating the valuations steps
+val_steps <- (17000 - 15001 - lookback) / batch_size
+# Caluclating the test steps
+test_steps <- (19000 - 17001 - lookback) / batch_size
+```
+
+
+ Model Construction
+Let's evaluate this approach, using the mean absolute error(MAE) metric
+```{r}
+evaluate_naive_method <- function() {
+  batch_maes <- c()
+  for (step in 1:val_steps) {
+    c(samples, targets) %<-% val_gen()
+    preds <- samples[,dim(samples)[[2]],2]
+    mae <- mean(abs(preds - targets))
+    batch_maes <- c(batch_maes, mae)
+  }
+  print(mean(batch_maes))
+}
+evaluate_naive_method()
+```
+
+
+
+Densely Connected Model
+Training and evaluating a densely connected model
+```{r}
+model <- keras_model_sequential() %>%
+  layer_flatten(input_shape = c(lookback / step, dim(data)[-1])) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1)
+
+model %>% compile(
+  optimizer = optimizer_rmsprop(),
+  loss = "mae"
+)
+
+history <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 500,
+  epochs = 20,
+  validation_data = val_gen,
+  validation_steps = val_steps
+)
+```
+```{r,echo=FALSE,fig.align="Center"}
+plot(history)
+```
+
+from the above plot we see that validation losses are similar to base model
+
+
+Recuurent Network model with stacked *layer_gru*
+
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_gru(units = 64, 
+            dropout = 0.1, 
+            recurrent_dropout = 0.5,
+            return_sequences = TRUE,
+            input_shape = list(NULL, dim(data)[[-1]])) %>% 
+  layer_gru(units = 128, activation = "relu",
+            dropout = 0.1,
+            recurrent_dropout = 0.5) %>% 
+  layer_dense(units = 1)
+model %>% compile(
+  optimizer = optimizer_rmsprop(),
+  loss = "mae"
+)
+history <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 50,
+  epochs = 5,
+  validation_data = val_gen,
+  validation_steps = val_steps
+)
+```
+```{r,echo=FALSE,fig.align="Center"}
+plot(history)
+```
+
+
+overfitting is stopped during the first 5 epochs.
+
+
+Evaluating on test set
+```{r}
+result <- model %>% fit_generator(
+  test_gen,
+  steps_per_epoch = 50,
+  epochs = 5,
+  validation_steps = test_steps
+)
+```
+```{r,echo=FALSE}
+plot(result)
+```
+
+By the above plot we can see that stacked model is performing well on the test data which is less than base model 
